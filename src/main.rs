@@ -20,25 +20,37 @@ impl<'a> Lexer<'a> {
 
         self.content
     }
+
+    fn strip_left(&mut self, n: usize) -> &'a [char] {
+        let token = &self.content[0..n];
+        self.content = &self.content[n..];
+        token
+    }
+
+    fn strip_left_while<P>(&mut self, mut predicate: P) -> &'a [char] where P: FnMut(&char) -> bool {
+        let mut i = 0;
+        while i < self.content.len() && predicate(&self.content[i]) {
+            i += 1;
+        }
+        return self.strip_left(i);
+    }
+
     fn next_token(&mut self) -> Option<&'a [char]> {
         self.trim_left();
+
         if self.content.len() == 0 {
             return None;
         }
 
-        if self.content[0].is_alphabetic() {
-            let mut i = 0;
-            while i < self.content.len() && self.content[i].is_alphanumeric() {
-                i += 1;
-            }
-            let token = &self.content[0..i];
-            self.content = &self.content[i..];
-            return Some(token);
+        if self.content[0].is_numeric() {
+            return Some(self.strip_left_while(|e| e.is_numeric() || e.is_ascii_punctuation()));
         }
 
-        let token = &self.content[0..1];
-        self.content = &self.content[1..];
-        return Some(token);
+        if self.content[0].is_alphabetic() {
+            return Some(self.strip_left_while(|e| e.is_alphanumeric()));
+        }
+
+        return Some(self.strip_left(1));
         todo!("Invalid token starts with {}", self.content[0]);
     }
 }
@@ -77,7 +89,7 @@ fn main() {
 
     let lexer = Lexer::new(&content);
     for token in lexer {
-        println!("{}", token.iter().collect::<String>());
+        println!("{}", token.iter().map(|e| e.to_ascii_uppercase()).collect::<String>());
     }
     /*
     let all_docs: HashMap<Path, HashMap<String, usize>> = HashMap::new();
