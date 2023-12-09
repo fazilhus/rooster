@@ -41,7 +41,7 @@ impl<'a> Lexer<'a> {
         return self.strip_left(i);
     }
 
-    fn next_token(&mut self) -> Option<&'a [char]> {
+    fn next_token(&mut self) -> Option<String> {
         self.trim_left();
 
         if self.content.is_empty() {
@@ -49,19 +49,27 @@ impl<'a> Lexer<'a> {
         }
 
         if self.content[0].is_numeric() {
-            return Some(self.strip_left_while(|e| e.is_numeric() || e.is_ascii_punctuation()));
+            return Some(self
+                .strip_left_while(|e| e.is_numeric() || e.is_ascii_punctuation())
+                .iter().collect());
         }
 
         if self.content[0].is_alphabetic() {
-            return Some(self.strip_left_while(|&e| e.is_alphanumeric()));
+            return Some(self
+                .strip_left_while(|&e| e.is_alphanumeric())
+                .iter()
+                .map(|e| e.to_ascii_uppercase())
+                .collect());
         }
 
-        return Some(self.strip_left(1));
+        return Some(self
+            .strip_left(1)
+            .iter().collect());
     }
 }
 
 impl<'a> Iterator for Lexer<'a> {
-    type Item = &'a [char];
+    type Item = String;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_token()
@@ -101,12 +109,11 @@ fn index_doc(_doc_path: &Path) -> Option<TermFreq> {
 
     let lexer = Lexer::new(&content);
     for token in lexer {
-        let term = token.iter().map(|e| e.to_ascii_uppercase()).collect::<String>();
-        if let Some(count) = tf.get_mut(&term) {
+        if let Some(count) = tf.get_mut(&token) {
             *count += 1;
         }
         else {
-            tf.insert(term, 1);
+            tf.insert(token, 1);
         }
     }
 
@@ -174,7 +181,7 @@ fn serve_404(request: Request) -> Result<(), ()> {
         })
 }
 
-fn serve_request(request: Request) -> Result<(), ()> {
+fn serve_request(mut request: Request) -> Result<(), ()> {
     match (request.method(), request.url()) {
         (Method::Get, "/") | (Method::Get, "/index.html") => {
             serve_static_file(request, "index.html", "text/html; charset=utf-8")
@@ -182,6 +189,22 @@ fn serve_request(request: Request) -> Result<(), ()> {
 
         (Method::Get, "/index.js") => {
             serve_static_file(request, "index.js", "text/javascript; charset=utf-8")
+        },
+
+        (Method::Post, "/api/search") => {
+            let mut buf = String::new();
+            request.as_reader().read_to_string(&mut buf).map_err(|err| {
+                eprintln!("ERROR: could not interpret body as utf-8: {err}");
+            })?;
+            let search_query: Vec<char> = buf.chars().collect();
+
+            for token in Lexer::new(&search_query) {
+                println!("{token:?}");
+            }
+
+            request.respond(Response::from_string("ok")).map_err(|err| {
+                eprintln!("ERROR: {err}")
+            })
         },
 
         _ => {
