@@ -186,6 +186,37 @@ fn serve_static_file(request: Request, file_path: &str, content_type: &str) -> R
     Ok(())
 }
 
+fn serve_api_search(mut request: Request, tfi: &TermFreqIndex) -> Result<(), ()> {
+    let mut buf = String::new();
+    request.as_reader().read_to_string(&mut buf).map_err(|err| {
+        eprintln!("ERROR: could not interpret body as utf-8: {err}");
+    })?;
+    let search_query: Vec<char> = buf.chars().collect();
+
+    let mut result = Vec::<(&Path, f32)>::new();
+    for (path, map) in tfi {
+        let rank = Lexer::new(&search_query)
+            .into_iter()
+            .fold(0.0, |acc, t| { acc + tf(&t, &map) * idf(&t, &tfi) });
+        result.push((path, rank));
+    }
+
+    result.sort_by(|(_, rank1), (_, rank2)| rank2.total_cmp(rank1));
+
+    let json = serde_json::to_string(&result
+        .iter().take(10)
+        .collect::<Vec<_>>())
+        .map_err(|err| {
+            eprintln!("ERROR: could not convert search results to JSON: {err}");
+        })?;
+    let content_type = Header::from_bytes("Content-Type", "application/json")?;
+    let response = Response::from_string(&json)
+        .with_header(content_type);
+    request.respond(response).map_err(|err| {
+        eprintln!("ERROR: could not serve a request: {err}");
+    })
+}
+
 fn serve_404(request: Request) -> Result<(), ()> {
     request.respond(Response::from_string("Error 404").with_status_code(404))
         .map_err(|err| {
@@ -193,7 +224,7 @@ fn serve_404(request: Request) -> Result<(), ()> {
         })
 }
 
-fn serve_request(mut request: Request, tfi: &TermFreqIndex) -> Result<(), ()> {
+fn serve_request(request: Request, tfi: &TermFreqIndex) -> Result<(), ()> {
     match (request.method(), request.url()) {
         (Method::Get, "/") | (Method::Get, "/index.html") => {
             serve_static_file(request, "index.html", "text/html; charset=utf-8")
@@ -204,28 +235,7 @@ fn serve_request(mut request: Request, tfi: &TermFreqIndex) -> Result<(), ()> {
         },
 
         (Method::Post, "/api/search") => {
-            let mut buf = String::new();
-            request.as_reader().read_to_string(&mut buf).map_err(|err| {
-                eprintln!("ERROR: could not interpret body as utf-8: {err}");
-            })?;
-            let search_query: Vec<char> = buf.chars().collect();
-
-            let mut result = Vec::<(&Path, f32)>::new();
-            for (path, map) in tfi {
-                let rank = Lexer::new(&search_query)
-                    .into_iter()
-                    .fold(0.0, |acc, t| { acc + tf(&t, &map) * idf(&t, &tfi) });
-                result.push((path, rank));
-            }
-
-            result.sort_by(|(_, rank1), (_, rank2)| rank2.total_cmp(rank1));
-            for (path, rank) in result.iter().take(10) {
-                println!("{path:?} -> {rank}");
-            }
-
-            request.respond(Response::from_string("ok")).map_err(|err| {
-                eprintln!("ERROR: {err}")
-            })
+            serve_api_search(request, tfi)
         },
 
         _ => {
