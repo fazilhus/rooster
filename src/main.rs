@@ -19,7 +19,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn trim_left(&mut self) -> &'a [char] {
-        while self.content.len() > 0 && self.content[0].is_ascii_whitespace() {
+        while !self.content.is_empty() && self.content[0].is_ascii_whitespace() {
             self.content = &self.content[1..];
         }
 
@@ -43,7 +43,7 @@ impl<'a> Lexer<'a> {
     fn next_token(&mut self) -> Option<&'a [char]> {
         self.trim_left();
 
-        if self.content.len() == 0 {
+        if self.content.is_empty() {
             return None;
         }
 
@@ -112,9 +112,12 @@ fn index_doc(_doc_path: &Path) -> Option<TermFreq> {
     return Some(tf);
 }
 
-fn index_all(_dir_path: &str) -> TermFreqIndex {
+fn index_all(_dir_path: &str) -> Option<TermFreqIndex> {
     let mut tfi = TermFreqIndex::new();
-    let dir = fs::read_dir(_dir_path).unwrap();
+    let dir = fs::read_dir(_dir_path).map_err(|err| {
+        eprintln!("ERROR: could not open directory {_dir_path}: {err}");
+        return None::<TermFreqIndex>;
+    }).unwrap();
 
     'next: for entry in dir {
         let file_path = entry.unwrap().path();
@@ -125,22 +128,26 @@ fn index_all(_dir_path: &str) -> TermFreqIndex {
             None => continue 'next,
         };
 
-        let mut stats = tf.iter().collect::<Vec<_>>();
-        stats.sort_by_key(|(_, freq)| *freq);
-        stats.reverse();
-
         tfi.insert(file_path, tf);
     }
 
-    return tfi;
+    Some(tfi)
+}
+
+fn hint(program: &str) {
+    eprintln!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
+    eprintln!("Subcommands:");
+    eprintln!("    index <folder>         index the <folder> and save the index to index.json file");
+    eprintln!("    search <index-file>    check how many documents are indexed in the file (searching is not implemented yet)");
 }
 
 fn main() {
     let mut args = env::args();
-    let _program = args.next().expect("path to program is provided");
+    let program = args.next().expect("path to program is provided");
 
     let subcommand = args.next().unwrap_or_else(|| {
         eprintln!("ERROR: no subcommand is provided");
+        hint(&program);
         exit(1);
     });
 
@@ -151,10 +158,14 @@ fn main() {
                 exit(1);
             });
 
-            let tfi = index_all(&dir_path);
+            let tfi = index_all(&dir_path).unwrap();
             println!("{dir_path} contains {count} files", count = tfi.len());
+
             let index_path = "index.json";
-            let index_file = File::create(index_path).unwrap();
+            let index_file = File::create(index_path).map_err(|err| {
+                eprintln!("ERROR: could not create index file {index_path}: {err}");
+            }).unwrap();
+
             println!("Saving {index_path}...");
             serde_json::to_writer(index_file, &tfi).unwrap();
         },
