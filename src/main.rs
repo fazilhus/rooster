@@ -155,6 +155,18 @@ fn index_all(_dir_path: &Path, tfi: &mut TermFreqIndex) -> Result<(), ()> {
     Ok(())
 }
 
+fn tf(term: &str, map: &TermFreq) -> f32 {
+    let a = map.get(term).cloned().unwrap_or(0) as f32;
+    let b = map.iter().fold(0, |acc, (_, v)| acc + v) as f32;
+    a / b
+}
+
+fn idf(term: &str, map: &TermFreqIndex) -> f32 {
+    let n = map.len() as f32;
+    let m = map.values().filter(|tf| tf.contains_key(term)).count().max(1) as f32;
+    (n / m).log10()
+}
+
 fn serve_static_file(request: Request, file_path: &str, content_type: &str) -> Result<(), ()> {
     println!("INFO: incoming request! method: {:?}, url: {:?}",
              request.method(),
@@ -181,7 +193,7 @@ fn serve_404(request: Request) -> Result<(), ()> {
         })
 }
 
-fn serve_request(mut request: Request) -> Result<(), ()> {
+fn serve_request(mut request: Request, tfi: &TermFreqIndex) -> Result<(), ()> {
     match (request.method(), request.url()) {
         (Method::Get, "/") | (Method::Get, "/index.html") => {
             serve_static_file(request, "index.html", "text/html; charset=utf-8")
@@ -198,8 +210,17 @@ fn serve_request(mut request: Request) -> Result<(), ()> {
             })?;
             let search_query: Vec<char> = buf.chars().collect();
 
-            for token in Lexer::new(&search_query) {
-                println!("{token:?}");
+            let mut result = Vec::<(&Path, f32)>::new();
+            for (path, map) in tfi {
+                let rank = Lexer::new(&search_query)
+                    .into_iter()
+                    .fold(0.0, |acc, t| { acc + tf(&t, &map) * idf(&t, &tfi) });
+                result.push((path, rank));
+            }
+
+            result.sort_by(|(_, rank1), (_, rank2)| rank2.total_cmp(rank1));
+            for (path, rank) in result.iter().take(10) {
+                println!("{path:?} -> {rank}");
             }
 
             request.respond(Response::from_string("ok")).map_err(|err| {
@@ -216,9 +237,9 @@ fn serve_request(mut request: Request) -> Result<(), ()> {
 fn hint(program: &str) {
     eprintln!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
     eprintln!("Subcommands:");
-    eprintln!("    index <folder>         index the <folder> and save the index to index.json file");
-    eprintln!("    search <index-file>    check how many documents are indexed in the file (searching is not implemented yet)");
-    eprintln!("    serve [address]        start local HTTP server");
+    eprintln!("    index <folder>                index the <folder> and save the index to index.json file");
+    eprintln!("    search <index-file>           check how many documents are indexed in the file (searching is not implemented yet)");
+    eprintln!("    serve <index-file> [address]  start local HTTP server");
 }
 
 fn main() {
@@ -271,15 +292,32 @@ fn main() {
         },
 
         "serve" => {
+            let index_path = args.next().unwrap_or_else(|| {
+                eprintln!("ERROR: no path to index is provided");
+                exit(1);
+            });
+
+            let index_file = match File::open(&index_path) {
+                Ok(file) => file,
+                Err(_) => {
+                    eprintln!("ERROR: invalid index file path");
+                    exit(1);
+                }
+            };
+
+            println!("Reading {index_path} index file...");
+            let tfi: TermFreqIndex = serde_json::from_reader(index_file).unwrap();
+            println!("{index_path} contains {count} files", count = tfi.len());
+
             let address = args.next().unwrap_or("127.0.0.1:8000".to_string());
             let server = tiny_http::Server::http(&address).map_err(|err| {
                 eprintln!("ERROR: could not start server: {err}");
                 exit(1);
             }).unwrap();
 
-            println!("Listening at http://{address}");
+            println!("Listening at http://{address}/");
             for request in server.incoming_requests() {
-                serve_request(request).unwrap();
+                serve_request(request, &tfi).unwrap();
             }
             todo!();
         },
