@@ -1,13 +1,14 @@
-use std::{fs, io};
+use std::{env, fs};
 use std::path::{Path, PathBuf};
 use xml::reader::{XmlEvent, EventReader};
 use std::collections::HashMap;
 use std::fs::File;
+use std::process::exit;
+use xml::common::{Position, TextPosition};
 
 type TermFreq = HashMap::<String, usize>;
 type TermFreqIndex = HashMap::<PathBuf, TermFreq>;
 
-#[derive(Debug)]
 struct Lexer<'a> {
     content: &'a [char],
 }
@@ -66,24 +67,34 @@ impl<'a> Iterator for Lexer<'a> {
     }
 }
 
-fn xml_to_string<P: AsRef<Path>>(_file_path: P) -> io::Result<String> {
-    let file = fs::File::open(_file_path)?;
-    let event_reader = EventReader::new(file);
+fn xml_to_string(_file_path: &Path) -> Option<String> {
+    let file = File::open(_file_path).map_err(|err| {
+        eprintln!("ERROR: could not open file {file_path}: {err}", file_path = _file_path.display());
+    }).ok()?;
 
+    let event_reader = EventReader::new(file);
     let mut content = String::new();
+
     for event in event_reader.into_iter() {
-        if let XmlEvent::Characters(text) = event.expect("TODO") {
+        let event = event.map_err(|err| {
+            let TextPosition {row, column} = err.position();
+            let msg = err.msg();
+            eprintln!("{file_path}:{row}:{column}: ERROR: {msg}", file_path = _file_path.display());
+        }).ok()?;
+
+        if let XmlEvent::Characters(text) = event {
             content.push_str(&text);
             content.push(' ');
         }
     }
-    Ok(content)
+    Some(content)
 }
 
-fn index_doc(_doc_path: &Path) -> TermFreq {
-    let content = xml_to_string(&_doc_path).unwrap()
-        .chars()
-        .collect::<Vec<_>>();
+fn index_doc(_doc_path: &Path) -> Option<TermFreq> {
+    let content = match xml_to_string(&_doc_path) {
+        Some(string) => string.chars().collect::<Vec<_>>(),
+        None => return None,
+    };
 
     let mut tf = TermFreq::new();
 
@@ -98,18 +109,21 @@ fn index_doc(_doc_path: &Path) -> TermFreq {
         }
     }
 
-    return tf;
+    return Some(tf);
 }
 
 fn index_all(_dir_path: &str) -> TermFreqIndex {
     let mut tfi = TermFreqIndex::new();
     let dir = fs::read_dir(_dir_path).unwrap();
 
-    for entry in dir {
+    'next: for entry in dir {
         let file_path = entry.unwrap().path();
         println!("Indexing {file_path:?}...");
 
-        let tf = index_doc(&file_path);
+        let tf = match index_doc(&file_path) {
+            Some(data) => data,
+            None => continue 'next,
+        };
 
         let mut stats = tf.iter().collect::<Vec<_>>();
         stats.sort_by_key(|(_, freq)| *freq);
@@ -122,19 +136,51 @@ fn index_all(_dir_path: &str) -> TermFreqIndex {
 }
 
 fn main() {
-    let index_path = "index.json";
-    if let Ok(index_file) = File::open(index_path) {
-        println!("Reading {index_path} index file...");
-        let tfi: TermFreqIndex = serde_json::from_reader(index_file).unwrap();
-        println!("{index_path} contains {count} files", count = tfi.len());
-    }
-    else {
-        let dir_path = "../docs.gl/gl4";
-        let tfi = index_all(dir_path);
-        println!("{index_path} contains {count} files", count = tfi.len());
-        let index_path = "index.json";
-        let index_file = File::create(index_path).unwrap();
-        println!("Saving {index_path}...");
-        serde_json::to_writer(index_file, &tfi).unwrap();
+    let mut args = env::args();
+    let _program = args.next().expect("path to program is provided");
+
+    let subcommand = args.next().unwrap_or_else(|| {
+        eprintln!("ERROR: no subcommand is provided");
+        exit(1);
+    });
+
+    match subcommand.as_str() {
+        "index" => {
+            let dir_path = args.next().unwrap_or_else(|| {
+                eprintln!("ERROR: no directory provided for indexing");
+                exit(1);
+            });
+
+            let tfi = index_all(&dir_path);
+            println!("{dir_path} contains {count} files", count = tfi.len());
+            let index_path = "index.json";
+            let index_file = File::create(index_path).unwrap();
+            println!("Saving {index_path}...");
+            serde_json::to_writer(index_file, &tfi).unwrap();
+        },
+
+        "search" => {
+            let index_path = args.next().unwrap_or_else(|| {
+                eprintln!("ERROR: no path to index is provided");
+                exit(1);
+            });
+
+            let index_file = match File::open(&index_path) {
+                Ok(file) => file,
+                Err(_) => {
+                    eprintln!("ERROR: invalid index file path");
+                    exit(1);
+                }
+            };
+
+            println!("Reading {index_path} index file...");
+            let tfi: TermFreqIndex = serde_json::from_reader(index_file).unwrap();
+            println!("{index_path} contains {count} files", count = tfi.len());
+        },
+
+        _ => {
+            eprintln!("ERROR: unknown subcommand {subcommand}");
+            exit(1);
+        },
     }
 }
