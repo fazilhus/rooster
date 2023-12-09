@@ -4,7 +4,7 @@ use xml::reader::{XmlEvent, EventReader};
 use std::collections::HashMap;
 use std::fs::File;
 use std::process::exit;
-use tiny_http::{Header, Request, Response};
+use tiny_http::{Header, Method, Request, Response};
 use xml::common::{Position, TextPosition};
 
 type TermFreq = HashMap::<String, usize>;
@@ -121,7 +121,7 @@ fn index_all(_dir_path: &Path, tfi: &mut TermFreqIndex) -> Result<(), ()> {
 
     'next: for entry in dir {
         let entry = entry.map_err(|err| {
-            eprintln!("ERROR: could not read file {dir_path}", dir_path = _dir_path.display());
+            eprintln!("ERROR: could not read file {dir_path}: {err}", dir_path = _dir_path.display());
         })?;
 
         let file_path = entry.path();
@@ -148,22 +148,46 @@ fn index_all(_dir_path: &Path, tfi: &mut TermFreqIndex) -> Result<(), ()> {
     Ok(())
 }
 
-fn serve_request(request: Request) -> Result<(), ()> {
+fn serve_static_file(request: Request, file_path: &str, content_type: &str) -> Result<(), ()> {
     println!("INFO: incoming request! method: {:?}, url: {:?}",
              request.method(),
              request.url());
 
-    let html_path = "index.html";
-    let html_file = File::open(html_path).map_err(|err| {
-        eprintln!("ERROR: could not open {html_path}: {err}");
+    let file = File::open(file_path).map_err(|err| {
+        eprintln!("ERROR: could not open {file_path}: {err}");
     })?;
 
-    let response = Response::from_file(html_file);
+
+    let content_type = Header::from_bytes(b"Content-Type", content_type.as_bytes())?;
+    let response = Response::from_file(file).with_header(content_type);
     request.respond(response).map_err(|err| {
-        eprintln!("ERROR: could not respond to request: {err}");
+        eprintln!("ERROR: could not serve static file {file_path}: {err}");
     })?;
 
     Ok(())
+}
+
+fn serve_404(request: Request) -> Result<(), ()> {
+    request.respond(Response::from_string("Error 404").with_status_code(404))
+        .map_err(|err| {
+            eprintln!("ERROR: could not respond to request: {err}");
+        })
+}
+
+fn serve_request(request: Request) -> Result<(), ()> {
+    match (request.method(), request.url()) {
+        (Method::Get, "/") | (Method::Get, "/index.html") => {
+            serve_static_file(request, "index.html", "text/html; charset=utf-8")
+        },
+
+        (Method::Get, "/index.js") => {
+            serve_static_file(request, "index.js", "text/javascript; charset=utf-8")
+        },
+
+        _ => {
+            serve_404(request)
+        },
+    }
 }
 
 fn hint(program: &str) {
