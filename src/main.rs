@@ -112,16 +112,29 @@ fn index_doc(_doc_path: &Path) -> Option<TermFreq> {
     return Some(tf);
 }
 
-fn index_all(_dir_path: &str) -> Option<TermFreqIndex> {
-    let mut tfi = TermFreqIndex::new();
+fn index_all(_dir_path: &Path, tfi: &mut TermFreqIndex) -> Result<(), ()> {
     let dir = fs::read_dir(_dir_path).map_err(|err| {
-        eprintln!("ERROR: could not open directory {_dir_path}: {err}");
-        return None::<TermFreqIndex>;
+        eprintln!("ERROR: could not open directory {dir_path}: {err}",
+                  dir_path = _dir_path.display());
     }).unwrap();
 
     'next: for entry in dir {
-        let file_path = entry.unwrap().path();
+        let entry = entry.map_err(|err| {
+            eprintln!("ERROR: could not read file {dir_path}", dir_path = _dir_path.display());
+        })?;
+
+        let file_path = entry.path();
         println!("Indexing {file_path:?}...");
+
+        let file_type = entry.file_type().map_err(|err| {
+            eprintln!("ERROR: could not determine type of file {file_path}: {err}",
+                      file_path = file_path.display());
+        })?;
+
+        if file_type.is_dir() {
+            index_all(&file_path, tfi)?;
+            continue 'next;
+        }
 
         let tf = match index_doc(&file_path) {
             Some(data) => data,
@@ -131,7 +144,7 @@ fn index_all(_dir_path: &str) -> Option<TermFreqIndex> {
         tfi.insert(file_path, tf);
     }
 
-    Some(tfi)
+    Ok(())
 }
 
 fn hint(program: &str) {
@@ -158,7 +171,8 @@ fn main() {
                 exit(1);
             });
 
-            let tfi = index_all(&dir_path).unwrap();
+            let mut tfi = TermFreqIndex::new();
+            index_all(Path::new(&dir_path), &mut tfi).unwrap();
             println!("{dir_path} contains {count} files", count = tfi.len());
 
             let index_path = "index.json";
