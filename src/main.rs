@@ -1,7 +1,11 @@
 use std::{fs, io};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use xml::reader::{XmlEvent, EventReader};
 use std::collections::HashMap;
+use std::fs::File;
+
+type TermFreq = HashMap::<String, usize>;
+type TermFreqIndex = HashMap::<PathBuf, TermFreq>;
 
 #[derive(Debug)]
 struct Lexer<'a> {
@@ -47,7 +51,7 @@ impl<'a> Lexer<'a> {
         }
 
         if self.content[0].is_alphabetic() {
-            return Some(self.strip_left_while(|&e| e.is_alphanumeric() || e == '_'));
+            return Some(self.strip_left_while(|&e| e.is_alphanumeric()));
         }
 
         return Some(self.strip_left(1));
@@ -76,41 +80,61 @@ fn xml_to_string<P: AsRef<Path>>(_file_path: P) -> io::Result<String> {
     Ok(content)
 }
 
-fn index_doc(_doc_ontent: &str) -> HashMap<String, usize> {
-    todo!("not implemented");
+fn index_doc(_doc_path: &Path) -> TermFreq {
+    let content = xml_to_string(&_doc_path).unwrap()
+        .chars()
+        .collect::<Vec<_>>();
+
+    let mut tf = TermFreq::new();
+
+    let lexer = Lexer::new(&content);
+    for token in lexer {
+        let term = token.iter().map(|e| e.to_ascii_uppercase()).collect::<String>();
+        if let Some(count) = tf.get_mut(&term) {
+            *count += 1;
+        }
+        else {
+            tf.insert(term, 1);
+        }
+    }
+
+    return tf;
 }
 
-fn main() {
-    //let mut all_docs = HashMap::<Path, HashMap<String, usize>>::new();
+fn index_all(_dir_path: &str) -> TermFreqIndex {
+    let mut tfi = TermFreqIndex::new();
+    let dir = fs::read_dir(_dir_path).unwrap();
 
-    let dir_path = "../docs.gl/gl4";
-    let dir = fs::read_dir(dir_path).unwrap();
     for entry in dir {
         let file_path = entry.unwrap().path();
-        let content = xml_to_string(&file_path).unwrap()
-            .chars()
-            .collect::<Vec<_>>();
+        println!("Indexing {file_path:?}...");
 
-        let mut tf = HashMap::<String, usize>::new();
-
-        let lexer = Lexer::new(&content);
-        for token in lexer {
-            let term = token.iter().map(|e| e.to_ascii_uppercase()).collect::<String>();
-            if let Some(count) = tf.get_mut(&term) {
-                *count += 1;
-            }
-            else {
-                tf.insert(term, 1);
-            }
-        }
+        let tf = index_doc(&file_path);
 
         let mut stats = tf.iter().collect::<Vec<_>>();
         stats.sort_by_key(|(_, freq)| *freq);
         stats.reverse();
 
-        println!("{file_path:?}");
-        for (term, freq) in stats.iter().take(10) {
-            println!("  {term} => {freq}");
-        }
+        tfi.insert(file_path, tf);
+    }
+
+    return tfi;
+}
+
+fn main() {
+    let index_path = "index.json";
+    if let Ok(index_file) = File::open(index_path) {
+        println!("Reading {index_path} index file...");
+        let tfi: TermFreqIndex = serde_json::from_reader(index_file).unwrap();
+        println!("{index_path} contains {count} files", count = tfi.len());
+    }
+    else {
+        let dir_path = "../docs.gl/gl4";
+        let tfi = index_all(dir_path);
+        println!("{index_path} contains {count} files", count = tfi.len());
+        let index_path = "index.json";
+        let index_file = File::create(index_path).unwrap();
+        println!("Saving {index_path}...");
+        serde_json::to_writer(index_file, &tfi).unwrap();
     }
 }
