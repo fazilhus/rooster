@@ -4,7 +4,7 @@ use xml::reader::{XmlEvent, EventReader};
 use std::collections::HashMap;
 use std::fs::File;
 use std::process::exit;
-use tiny_http::{Header, Response};
+use tiny_http::{Header, Request, Response};
 use xml::common::{Position, TextPosition};
 
 type TermFreq = HashMap::<String, usize>;
@@ -148,6 +148,24 @@ fn index_all(_dir_path: &Path, tfi: &mut TermFreqIndex) -> Result<(), ()> {
     Ok(())
 }
 
+fn serve_request(request: Request) -> Result<(), ()> {
+    println!("INFO: incoming request! method: {:?}, url: {:?}",
+             request.method(),
+             request.url());
+
+    let html_path = "index.html";
+    let html_file = File::open(html_path).map_err(|err| {
+        eprintln!("ERROR: could not open {html_path}: {err}");
+    })?;
+
+    let response = Response::from_file(html_file);
+    request.respond(response).map_err(|err| {
+        eprintln!("ERROR: could not respond to request: {err}");
+    })?;
+
+    Ok(())
+}
+
 fn hint(program: &str) {
     eprintln!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
     eprintln!("Subcommands:");
@@ -214,23 +232,7 @@ fn main() {
 
             println!("Listening at http://{address}");
             for request in server.incoming_requests() {
-                println!("INFO: incoming request! method: {:?}, url: {:?}",
-                    request.method(),
-                    request.url());
-
-                let response = Response::from_string(r#"
-                    <html>
-                        <head>
-                            <title>Rooster</title>
-                        </head>
-                        <body>
-                            <h1>Hello, World!</h1>
-                        </body>
-                    </html>"#)
-                    .with_header(Header::from_bytes(b"Content-Type", b"text/html; charset=utf-8").unwrap());
-                request.respond(response).unwrap_or_else(|err| {
-                    eprintln!("ERROR: could not respond to request: {err}");
-                });
+                serve_request(request).unwrap();
             }
             todo!();
         },
