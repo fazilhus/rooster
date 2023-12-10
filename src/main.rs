@@ -186,22 +186,26 @@ fn serve_static_file(request: Request, file_path: &str, content_type: &str) -> R
     Ok(())
 }
 
-fn serve_api_search(mut request: Request, tfi: &TermFreqIndex) -> Result<(), ()> {
-    let mut buf = String::new();
-    request.as_reader().read_to_string(&mut buf).map_err(|err| {
-        eprintln!("ERROR: could not interpret body as utf-8: {err}");
-    })?;
-    let search_query: Vec<char> = buf.chars().collect();
-
+fn search_query<'a>(query: &'a [char], tfi: &'a TermFreqIndex) -> Vec<(&'a Path, f32)> {
     let mut result = Vec::<(&Path, f32)>::new();
     for (path, map) in tfi {
-        let rank = Lexer::new(&search_query)
+        let rank = Lexer::new(&query)
             .into_iter()
             .fold(0.0, |acc, t| { acc + tf(&t, &map) * idf(&t, &tfi) });
         result.push((path, rank));
     }
 
     result.sort_by(|(_, rank1), (_, rank2)| rank2.total_cmp(rank1));
+    result
+}
+
+fn serve_api_search(mut request: Request, tfi: &TermFreqIndex) -> Result<(), ()> {
+    let mut buf = String::new();
+    request.as_reader().read_to_string(&mut buf).map_err(|err| {
+        eprintln!("ERROR: could not interpret body as utf-8: {err}");
+    })?;
+    let query: Vec<char> = buf.chars().collect();
+    let result = search_query(&query, &tfi);
 
     let json = serde_json::to_string(&result
         .iter().take(10)
@@ -248,7 +252,7 @@ fn hint(program: &str) {
     eprintln!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
     eprintln!("Subcommands:");
     eprintln!("    index <folder>                index the <folder> and save the index to index.json file");
-    eprintln!("    search <index-file>           check how many documents are indexed in the file (searching is not implemented yet)");
+    eprintln!("    search <index-file> <query>   check how many documents are indexed in the file (searching is not implemented yet)");
     eprintln!("    serve <index-file> [address]  start local HTTP server");
 }
 
@@ -266,6 +270,7 @@ fn main() {
         "index" => {
             let dir_path = args.next().unwrap_or_else(|| {
                 eprintln!("ERROR: no directory provided for indexing");
+                hint(&program);
                 exit(1);
             });
 
@@ -285,25 +290,35 @@ fn main() {
         "search" => {
             let index_path = args.next().unwrap_or_else(|| {
                 eprintln!("ERROR: no path to index is provided");
+                hint(&program);
                 exit(1);
             });
 
-            let index_file = match File::open(&index_path) {
-                Ok(file) => file,
-                Err(_) => {
-                    eprintln!("ERROR: invalid index file path");
-                    exit(1);
-                }
-            };
+            let prompt = args.next().unwrap_or_else(|| {
+                eprintln!("ERROR: no prompt is provided");
+                hint(&program);
+                exit(1);
+            }).chars().collect::<Vec<_>>();
 
-            println!("Reading {index_path} index file...");
-            let tfi: TermFreqIndex = serde_json::from_reader(index_file).unwrap();
-            println!("{index_path} contains {count} files", count = tfi.len());
+            let index_file = File::open(&index_path).map_err(|err| {
+                eprintln!("ERROR: could not open index file {index_path}: {err}");
+                exit(1);
+            }).unwrap();
+
+            let tfi: TermFreqIndex = serde_json::from_reader(index_file).map_err(|err| {
+                eprintln!("ERROR: could not parse index file {index_path}: {err}");
+                exit(1);
+            }).unwrap();
+
+            for (path, rank) in search_query(&prompt, &tfi).iter().take(10) {
+                println!("{path:?} {rank}");
+            }
         },
 
         "serve" => {
             let index_path = args.next().unwrap_or_else(|| {
                 eprintln!("ERROR: no path to index is provided");
+                hint(&program);
                 exit(1);
             });
 
@@ -334,6 +349,7 @@ fn main() {
 
         _ => {
             eprintln!("ERROR: unknown subcommand {subcommand}");
+            hint(&program);
             exit(1);
         },
     }
