@@ -2,6 +2,7 @@ use std::{env, fs};
 use std::path::{Path};
 use xml::reader::{XmlEvent, EventReader};
 use std::fs::File;
+use std::io::{BufReader, BufWriter};
 use std::process::exit;
 use xml::common::{Position, TextPosition};
 
@@ -15,7 +16,7 @@ fn xml_to_string(_file_path: &Path) -> Option<String> {
         eprintln!("ERROR: could not open file {file_path}: {err}", file_path = _file_path.display());
     }).ok()?;
 
-    let event_reader = EventReader::new(file);
+    let event_reader = EventReader::new(BufReader::new(file));
     let mut content = String::new();
 
     for event in event_reader.into_iter() {
@@ -125,7 +126,7 @@ fn main() {
             }).unwrap();
 
             println!("Saving {index_path}...");
-            serde_json::to_writer(index_file, &tfi).unwrap();
+            serde_json::to_writer(BufWriter::new(index_file), &tfi).unwrap();
         },
 
         "search" => {
@@ -146,7 +147,7 @@ fn main() {
                 exit(1);
             }).unwrap();
 
-            let tfi: TermFreqIndex = serde_json::from_reader(index_file).map_err(|err| {
+            let tfi: TermFreqIndex = serde_json::from_reader(BufReader::new(index_file)).map_err(|err| {
                 eprintln!("ERROR: could not parse index file {index_path}: {err}");
                 exit(1);
             }).unwrap();
@@ -172,7 +173,7 @@ fn main() {
             };
 
             println!("Reading {index_path} index file...");
-            let tfi: TermFreqIndex = serde_json::from_reader(index_file).unwrap();
+            let tfi: TermFreqIndex = serde_json::from_reader(BufReader::new(index_file)).unwrap();
             println!("{index_path} contains {count} files", count = tfi.len());
 
             let address = args.next().unwrap_or("127.0.0.1:8000".to_string());
