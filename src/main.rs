@@ -188,8 +188,9 @@ fn serve_static_file(request: Request, file_path: &str, content_type: &str) -> R
 
 fn search_query<'a>(query: &'a [char], tfi: &'a TermFreqIndex) -> Vec<(&'a Path, f32)> {
     let mut result = Vec::<(&Path, f32)>::new();
+    let tokens = Lexer::new(&query).collect::<Vec<_>>();
     for (path, map) in tfi {
-        let rank = Lexer::new(&query)
+        let rank = tokens
             .into_iter()
             .fold(0.0, |acc, t| { acc + tf(&t, &map) * idf(&t, &tfi) });
         result.push((path, rank));
