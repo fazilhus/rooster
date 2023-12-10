@@ -1,80 +1,14 @@
 use std::{env, fs};
-use std::path::{Path, PathBuf};
+use std::path::{Path};
 use xml::reader::{XmlEvent, EventReader};
-use std::collections::HashMap;
 use std::fs::File;
 use std::process::exit;
-use tiny_http::{Header, Method, Request, Response};
 use xml::common::{Position, TextPosition};
 
-type TermFreq = HashMap::<String, usize>;
-type TermFreqIndex = HashMap::<PathBuf, TermFreq>;
+mod model;
+use model::*;
 
-struct Lexer<'a> {
-    content: &'a [char],
-}
-
-impl<'a> Lexer<'a> {
-    fn new(content: &'a [char]) -> Self {
-        Self { content }
-    }
-
-    fn trim_left(&mut self) -> &'a [char] {
-        while !self.content.is_empty() && self.content[0].is_ascii_whitespace() {
-            self.content = &self.content[1..];
-        }
-
-        self.content
-    }
-
-    fn strip_left(&mut self, n: usize) -> &'a [char] {
-        let token = &self.content[0..n];
-        self.content = &self.content[n..];
-        token
-    }
-
-    fn strip_left_while<P>(&mut self, mut predicate: P) -> &'a [char] where P: FnMut(&char) -> bool {
-        let mut i = 0;
-        while i < self.content.len() && predicate(&self.content[i]) {
-            i += 1;
-        }
-        return self.strip_left(i);
-    }
-
-    fn next_token(&mut self) -> Option<String> {
-        self.trim_left();
-
-        if self.content.is_empty() {
-            return None;
-        }
-
-        if self.content[0].is_numeric() {
-            return Some(self
-                .strip_left_while(|e| e.is_numeric() || e.is_ascii_punctuation())
-                .iter().collect());
-        }
-
-        if self.content[0].is_alphabetic() {
-            return Some(self
-                .strip_left_while(|&e| e.is_alphanumeric())
-                .iter()
-                .map(|e| e.to_ascii_uppercase())
-                .collect());
-        }
-
-        return Some(self
-            .strip_left(1)
-            .iter().collect());
-    }
-}
-
-impl<'a> Iterator for Lexer<'a> {
-    type Item = String;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.next_token()
-    }
-}
+mod server;
 
 fn xml_to_string(_file_path: &Path) -> Option<String> {
     let file = File::open(_file_path).map_err(|err| {
@@ -153,100 +87,6 @@ fn index_all(_dir_path: &Path, tfi: &mut TermFreqIndex) -> Result<(), ()> {
     }
 
     Ok(())
-}
-
-fn tf(term: &str, map: &TermFreq) -> f32 {
-    let a = map.get(term).cloned().unwrap_or(0) as f32;
-    let b = map.iter().fold(0, |acc, (_, v)| acc + v) as f32;
-    a / b
-}
-
-fn idf(term: &str, map: &TermFreqIndex) -> f32 {
-    let n = map.len() as f32;
-    let m = map.values().filter(|tf| tf.contains_key(term)).count().max(1) as f32;
-    (n / m).log10()
-}
-
-fn serve_static_file(request: Request, file_path: &str, content_type: &str) -> Result<(), ()> {
-    println!("INFO: incoming request! method: {:?}, url: {:?}",
-             request.method(),
-             request.url());
-
-    let file = File::open(file_path).map_err(|err| {
-        eprintln!("ERROR: could not open {file_path}: {err}");
-    })?;
-
-
-    let content_type = Header::from_bytes(b"Content-Type", content_type.as_bytes())?;
-    let response = Response::from_file(file).with_header(content_type);
-    request.respond(response).map_err(|err| {
-        eprintln!("ERROR: could not serve static file {file_path}: {err}");
-    })?;
-
-    Ok(())
-}
-
-fn search_query<'a>(query: &'a [char], tfi: &'a TermFreqIndex) -> Vec<(&'a Path, f32)> {
-    let mut result = Vec::<(&Path, f32)>::new();
-    let tokens = Lexer::new(&query).collect::<Vec<_>>();
-    for (path, map) in tfi {
-        let rank = tokens
-            .into_iter()
-            .fold(0.0, |acc, t| { acc + tf(&t, &map) * idf(&t, &tfi) });
-        result.push((path, rank));
-    }
-
-    result.sort_by(|(_, rank1), (_, rank2)| rank2.total_cmp(rank1));
-    result
-}
-
-fn serve_api_search(mut request: Request, tfi: &TermFreqIndex) -> Result<(), ()> {
-    let mut buf = String::new();
-    request.as_reader().read_to_string(&mut buf).map_err(|err| {
-        eprintln!("ERROR: could not interpret body as utf-8: {err}");
-    })?;
-    let query: Vec<char> = buf.chars().collect();
-    let result = search_query(&query, &tfi);
-
-    let json = serde_json::to_string(&result
-        .iter().take(10)
-        .collect::<Vec<_>>())
-        .map_err(|err| {
-            eprintln!("ERROR: could not convert search results to JSON: {err}");
-        })?;
-    let content_type = Header::from_bytes("Content-Type", "application/json")?;
-    let response = Response::from_string(&json)
-        .with_header(content_type);
-    request.respond(response).map_err(|err| {
-        eprintln!("ERROR: could not serve a request: {err}");
-    })
-}
-
-fn serve_404(request: Request) -> Result<(), ()> {
-    request.respond(Response::from_string("Error 404").with_status_code(404))
-        .map_err(|err| {
-            eprintln!("ERROR: could not respond to request: {err}");
-        })
-}
-
-fn serve_request(request: Request, tfi: &TermFreqIndex) -> Result<(), ()> {
-    match (request.method(), request.url()) {
-        (Method::Get, "/") | (Method::Get, "/index.html") => {
-            serve_static_file(request, "index.html", "text/html; charset=utf-8")
-        },
-
-        (Method::Get, "/index.js") => {
-            serve_static_file(request, "index.js", "text/javascript; charset=utf-8")
-        },
-
-        (Method::Post, "/api/search") => {
-            serve_api_search(request, tfi)
-        },
-
-        _ => {
-            serve_404(request)
-        },
-    }
 }
 
 fn hint(program: &str) {
@@ -336,16 +176,7 @@ fn main() {
             println!("{index_path} contains {count} files", count = tfi.len());
 
             let address = args.next().unwrap_or("127.0.0.1:8000".to_string());
-            let server = tiny_http::Server::http(&address).map_err(|err| {
-                eprintln!("ERROR: could not start server: {err}");
-                exit(1);
-            }).unwrap();
-
-            println!("Listening at http://{address}/");
-            for request in server.incoming_requests() {
-                serve_request(request, &tfi).unwrap();
-            }
-            todo!();
+            server::start(&address, &tfi).ok();
         },
 
         _ => {
