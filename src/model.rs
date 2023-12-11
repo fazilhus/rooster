@@ -85,10 +85,12 @@ pub fn idf(term: &str, map: &TermFreqIndex) -> f32 {
 pub fn search_query<'a>(query: &'a [char], tfi: &'a TermFreqIndex) -> Vec<(&'a Path, f32)> {
     let mut result = Vec::<(&Path, f32)>::new();
     let tokens = Lexer::new(&query).collect::<Vec<_>>();
+    let cached_idf = tokens.iter().map(|t| idf(&t, &tfi)).collect::<Vec<f32>>();
     for (path, map) in tfi {
-        let rank = tokens
-            .iter()
-            .fold(0.0, |acc, t| { acc + tf(&t, &map) * idf(&t, &tfi) });
+        let mut rank = 0f32;
+        for (i, token) in tokens.iter().enumerate() {
+            rank += tf(&token, &map) * cached_idf[i]
+        }
         result.push((path, rank));
     }
 
